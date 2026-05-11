@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h2>{{ lesson.title }}</h2>
+        <h4>Курс: {{ course.title }}</h4>
+        <h5 class="text-primary">Группа: {{ group.name }}</h5>
+    </div>
+    <a href="{{ url_for('course', course_id=course.id) }}" class="btn btn-secondary">Назад к курсу</a>
+</div>
+
+<div class="card mt-4">
+    <div class="card-body">
+        <h5>Задание</h5>
+        <p>{{ lesson.content }}</p>
+        <small>Тип: {% if lesson.lesson_type == 'test' %}Тест{% else %}Письменное задание{% endif %}</small>
+    </div>
+</div>
+
+{% if lesson.lesson_type == 'test' %}
+    {% if assignment and assignment.test_answers %}
+        <div class="alert alert-info mt-4">
+            <h5>Результаты теста</h5>
+            <p><strong>Оценка:</strong> {{ assignment.score }} из {{ lesson.questions|length }}</p>
+            <p><strong>Комментарий:</strong> {{ assignment.feedback }}</p>
+            
+            <hr>
+            <h6>Детальные результаты:</h6>
+            <div class="table-responsive">
+                <table class="table table-sm">
+                    <thead>
+                        <tr>
+                            <th>Вопрос</th>
+                            <th>Ваш ответ</th>
+                            <th>Результат</th>
+                            <th>Правильный ответ</th>
+                        </thead>
+                        <tbody>
+                            {% for test_answer in assignment.test_answers %}
+                                {% if test_answer.question %}
+                                    <tr class="{% if test_answer.is_correct %}table-success{% else %}table-danger{% endif %}">
+                                        <td>{{ test_answer.question.text }}</td>
+                                        <td>{{ test_answer.answer }}</td>
+                                        <td>
+                                            {% if test_answer.is_correct %}
+                                                ✓ Правильно
+                                            {% else %}
+                                                ✗ Неправильно
+                                            {% endif %}
+                                        </td>
+                                        <td class="{% if not test_answer.is_correct %}text-danger{% endif %}">
+                                            {% if not test_answer.is_correct %}
+                                                Правильный ответ: {{ test_answer.question.correct_answer }}
+                                            {% endif %}
+                                        </td>
+                                    </tr>
+                                {% endif %}
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    {% else %}
+        <div class="alert alert-warning mt-4">
+            <p>Вы еще не прошли этот тест.</p>
+            <a href="{{ url_for('take_test', lesson_id=lesson.id, group_id=group.id) }}" class="btn btn-success">Пройти тест</a>
+        </div>
+    {% endif %}
+{% else %}
+    {% if assignment %}
+        <div class="alert alert-info mt-4">
+            <h5>Ваш ответ</h5>
+            {% if assignment.answer_text %}
+                <p>{{ assignment.answer_text }}</p>
+            {% endif %}
+            {% if assignment.answer_file %}
+                <p><a href="{{ url_for('uploaded_file', filename=assignment.answer_file) }}" target="_blank">Скачать файл</a></p>
+            {% endif %}
+            <p><strong>Дата сдачи:</strong> {{ assignment.submitted_at.strftime('%d.%m.%Y %H:%M') }}</p>
+            {% if assignment.score is not none %}
+                <p><strong>Оценка:</strong> {{ assignment.score }}</p>
+            {% endif %}
+            {% if assignment.feedback %}
+                <p><strong>Комментарий преподавателя:</strong> {{ assignment.feedback }}</p>
+            {% endif %}
+        </div>
+    {% endif %}
+    
+    <div class="card mt-4">
+        <div class="card-body">
+            <h5>Отправить ответ</h5>
+            <form method="POST" action="{{ url_for('submit_assignment', lesson_id=lesson.id) }}" enctype="multipart/form-data">
+                <div class="mb-3">
+                    <label for="answer_text" class="form-label">Текстовый ответ</label>
+                    <textarea class="form-control" id="answer_text" name="answer_text" rows="5">{{ assignment.answer_text if assignment else '' }}</textarea>
+                </div>
+                <div class="mb-3">
+                    <label for="answer_file" class="form-label">Или загрузить файл</label>
+                    <input type="file" class="form-control" id="answer_file" name="answer_file">
+                </div>
+                <button type="submit" class="btn btn-primary">Отправить</button>
+            </form>
+        </div>
+    </div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h2>{{ lesson.title }}</h2>
+        <h4>Курс: {{ course.title }}</h4>
+        <h5 class="text-primary">Группа: {{ group.name }}</h5>
+    </div>
+    <a href="{{ url_for('course_group', course_id=course.id, group_id=group.id) }}" class="btn btn-secondary">Назад к группе</a>
+</div>
+
+<div class="card mt-4">
+    <div class="card-body">
+        <h5>Задание</h5>
+        <p>{{ lesson.content }}</p>
+        <small>Тип: {% if lesson.lesson_type == 'test' %}Тест{% else %}Письменное задание{% endif %}</small>
+    </div>
+</div>
+
+<h3 class="mt-4">Выполненные задания студентов группы "{{ group.name }}"</h3>
+{% if assignments %}
+    {% for assignment in assignments %}
+        <div class="card mt-3">
+            <div class="card-body">
+                <h5>{{ assignment.student.name }}</h5>
+                <p><strong>Дата сдачи:</strong> {{ assignment.submitted_at.strftime('%d.%m.%Y %H:%M') }}</p>
+                
+                {% if lesson.lesson_type == 'test' %}
+                    <p><strong>Результат теста:</strong></p>
+                    {% if assignment.test_answers %}
+                        <div class="table-responsive">
+                            <table class="table table-sm">
+                                <thead>
+                                    <tr>
+                                        <th>Вопрос</th>
+                                        <th>Ответ студента</th>
+                                        <th>Результат</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    {% for test_answer in assignment.test_answers %}
+                                        {% set question = test_answer.question %}
+                                        <tr class="{% if test_answer.is_correct %}table-success{% else %}table-danger{% endif %}">
+                                            <td>{{ question.text }}</td>
+                                            <td>{{ test_answer.answer }}</td>
+                                            <td>
+                                                {% if test_answer.is_correct %}
+                                                    ✓ Правильно
+                                                {% else %}
+                                                    ✗ Неправильно (правильный ответ: {{ question.correct_answer }})
+                                                {% endif %}
+                                            </td>
+                                        </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                        <p><strong>Итоговая оценка:</strong> {{ assignment.score }} из {{ lesson.questions|length }}</p>
+                    {% endif %}
+                {% else %}
+                    <p><strong>Ответ:</strong></p>
+                    {% if assignment.answer_text %}
+                        <div class="alert alert-light">
+                            {{ assignment.answer_text }}
+                        </div>
+                    {% endif %}
+                    {% if assignment.answer_file %}
+                        <p><a href="{{ url_for('uploaded_file', filename=assignment.answer_file) }}" target="_blank" class="btn btn-sm btn-info">Скачать файл</a></p>
+                    {% endif %}
+                {% endif %}
+                
+                <form method="POST" action="{{ url_for('grade_assignment', lesson_id=lesson.id, assignment_id=assignment.id) }}">
+                    <div class="row mt-3">
+                        <div class="col-md-3">
+                            <label for="score" class="form-label">Оценка (0-100)</label>
+                            <input type="number" class="form-control" name="score" value="{{ assignment.score or '' }}" min="0" max="100">
+                        </div>
+                        <div class="col-md-7">
+                            <label for="feedback" class="form-label">Комментарий</label>
+                            <input type="text" class="form-control" name="feedback" value="{{ assignment.feedback or '' }}">
+                        </div>
+                        <div class="col-md-2">
+                            <button type="submit" class="btn btn-primary mt-4">Сохранить</button>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>
+    {% endfor %}
+{% else %}
+    <div class="alert alert-info mt-3">
+        <p>Нет выполненных заданий от студентов этой группы</p>
+    </div>
+{% endif %}
+{% endblock %}

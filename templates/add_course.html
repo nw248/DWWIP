@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h2>Создать курс</h2>
+
+<form method="POST">
+    <div class="mb-3">
+        <label for="title" class="form-label">Название курса</label>
+        <input type="text" class="form-control" id="title" name="title" required>
+    </div>
+    
+    <div class="mb-3">
+        <label for="description" class="form-label">Описание курса</label>
+        <textarea class="form-control" id="description" name="description" rows="3"></textarea>
+    </div>
+    
+    <div class="mb-3">
+        <label class="form-label">Преподаватели</label>
+        {% for teacher in teachers %}
+            <div class="form-check">
+                <input class="form-check-input" type="checkbox" name="teachers" value="{{ teacher.id }}">
+                <label class="form-check-label">
+                    {{ teacher.name }} ({{ teacher.email }})
+                </label>
+            </div>
+        {% endfor %}
+    </div>
+    
+    <button type="submit" class="btn btn-primary">Создать</button>
+    <a href="{{ url_for('admin_dashboard') }}" class="btn btn-secondary">Отмена</a>
+</form>
+{% endblock %}

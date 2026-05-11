@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h2>Добавить урок в курс "{{ course.title }}"</h2>
+
+<form method="POST" id="lessonForm">
+    <div class="mb-3">
+        <label for="title" class="form-label">Название урока</label>
+        <input type="text" class="form-control" id="title" name="title" required>
+    </div>
+    
+    <div class="mb-3">
+        <label for="content" class="form-label">Содержание урока</label>
+        <textarea class="form-control" id="content" name="content" rows="5" required></textarea>
+    </div>
+    
+    <div class="mb-3">
+        <label for="lesson_type" class="form-label">Тип урока</label>
+        <select class="form-control" id="lesson_type" name="lesson_type" onchange="toggleQuestions()">
+            <option value="text">Текстовое задание</option>
+            <option value="test">Тест</option>
+        </select>
+    </div>
+    
+    <div id="questionsSection" style="display: none;">
+        <h4>Вопросы теста</h4>
+        <div id="questionsContainer">
+            <!-- Вопросы будут добавляться сюда -->
+        </div>
+        <button type="button" class="btn btn-secondary mb-3" onclick="addQuestion()">Добавить вопрос</button>
+        <input type="hidden" id="questions_count" name="questions_count" value="0">
+    </div>
+    
+    <button type="submit" class="btn btn-primary">Создать урок</button>
+    <a href="{{ url_for('course', course_id=course.id) }}" class="btn btn-secondary">Отмена</a>
+</form>
+
+<script>
+    let questionCount = 0;
+    
+    function toggleQuestions() {
+        const type = document.getElementById('lesson_type').value;
+        const section = document.getElementById('questionsSection');
+        section.style.display = type === 'test' ? 'block' : 'none';
+    }
+    
+    function addQuestion() {
+        const container = document.getElementById('questionsContainer');
+        const questionDiv = document.createElement('div');
+        questionDiv.className = 'card mb-3';
+        questionDiv.innerHTML = `
+            <div class="card-body">
+                <h5>Вопрос ${questionCount + 1}</h5>
+                <div class="mb-3">
+                    <label class="form-label">Текст вопроса</label>
+                    <textarea class="form-control" name="question_${questionCount}_text" required></textarea>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Вариант A</label>
+                    <input type="text" class="form-control" name="question_${questionCount}_a" required>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Вариант B</label>
+                    <input type="text" class="form-control" name="question_${questionCount}_b" required>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Вариант C</label>
+                    <input type="text" class="form-control" name="question_${questionCount}_c" required>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Вариант D</label>
+                    <input type="text" class="form-control" name="question_${questionCount}_d" required>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Правильный ответ</label>
+                    <select class="form-control" name="question_${questionCount}_correct" required>
+                        <option value="A">A</option>
+                        <option value="B">B</option>
+                        <option value="C">C</option>
+                        <option value="D">D</option>
+                    </select>
+                </div>
+            </div>
+        `;
+        container.appendChild(questionDiv);
+        questionCount++;
+        document.getElementById('questions_count').value = questionCount;
+    }
+</script>
+{% endblock %}

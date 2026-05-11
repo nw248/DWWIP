@@ -1,0 +1,46 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h2>{{ course.title }}</h2>
+        {% if course.description %}
+            <p class="text-muted">{{ course.description }}</p>
+        {% endif %}
+    </div>
+</div>
+
+<h3 class="mt-4">Уроки ({{ lessons|length }})</h3>
+{% if lessons %}
+    <div class="list-group">
+        {% for lesson in lessons %}
+            {% set group_lesson = lesson.group_lessons|selectattr('group_id', 'equalto', current_user.group_id)|first %}
+            {% if group_lesson %}
+                <a href="{{ url_for('group_lesson', group_lesson_id=group_lesson.id) }}" class="list-group-item list-group-item-action">
+                    <div class="d-flex w-100 justify-content-between">
+                        <h5 class="mb-1">{{ lesson.title }}</h5>
+                        <small>{{ lesson.created_at.strftime('%d.%m.%Y') if lesson.created_at else '' }}</small>
+                    </div>
+                    <p class="mb-1">{{ lesson.content[:150] }}{% if lesson.content|length > 150 %}...{% endif %}</p>
+                    <small>Тип: {% if lesson.lesson_type == 'test' %}Тест{% else %}Текстовое задание{% endif %}</small>
+                </a>
+            {% else %}
+                <div class="list-group-item">
+                    <div class="d-flex w-100 justify-content-between">
+                        <h5 class="mb-1">{{ lesson.title }}</h5>
+                        <small>{{ lesson.created_at.strftime('%d.%m.%Y') if lesson.created_at else '' }}</small>
+                    </div>
+                    <p class="mb-1">{{ lesson.content[:150] }}{% if lesson.content|length > 150 %}...{% endif %}</p>
+                    <small class="text-warning">Урок пока не доступен</small>
+                </div>
+            {% endif %}
+        {% endfor %}
+    </div>
+{% else %}
+    <div class="alert alert-info">
+        <p>Уроков пока нет</p>
+    </div>
+{% endif %}
+
+<a href="{{ url_for('index') }}" class="btn btn-secondary mt-3">Назад</a>
+{% endblock %}

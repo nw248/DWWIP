@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h2>{{ course.title }}</h2>
+        {% if course.description %}
+            <p class="text-muted">{{ course.description }}</p>
+        {% endif %}
+    </div>
+    {% if role == 'teacher' %}
+        <div>
+            <a href="{{ url_for('add_students_to_course', course_id=course.id) }}" class="btn btn-secondary">Управление группами</a>
+            <a href="{{ url_for('add_lesson', course_id=course.id) }}" class="btn btn-primary">Добавить урок</a>
+        </div>
+    {% endif %}
+</div>
+
+{% if role == 'teacher' %}
+    <h3 class="mt-4">Группы на курсе</h3>
+    {% if groups %}
+        <div class="row">
+            {% for group in groups %}
+                <div class="col-md-3 mb-2">
+                    <div class="card">
+                        <div class="card-body">
+                            <h6>{{ group.name }}</h6>
+                            <small class="text-muted">Студентов: {{ group.students|length }}</small>
+                        </div>
+                    </div>
+                </div>
+            {% endfor %}
+        </div>
+    {% else %}
+        <div class="alert alert-warning">
+            Группы не добавлены. <a href="{{ url_for('add_students_to_course', course_id=course.id) }}">Добавьте группы студентов</a> чтобы они могли видеть этот курс.
+        </div>
+    {% endif %}
+    
+    <h3 class="mt-4">Уроки курса</h3>
+    {% if course.lessons %}
+        <div class="list-group">
+            {% for lesson in course.lessons %}
+                <a href="{{ url_for('lesson', lesson_id=lesson.id) }}" class="list-group-item list-group-item-action">
+                    <div class="d-flex w-100 justify-content-between">
+                        <h5 class="mb-1">{{ lesson.title }}</h5>
+                        <small>{{ lesson.created_at.strftime('%d.%m.%Y') }}</small>
+                    </div>
+                    <p class="mb-1">{{ lesson.content[:100] }}{% if lesson.content|length > 100 %}...{% endif %}</p>
+                    <small>
+                        Тип: {% if lesson.lesson_type == 'test' %}Тест{% else %}Текстовое задание{% endif %}
+                        {% set submissions = lesson.assignments|length %}
+                        | Выполнили: {{ submissions }}
+                    </small>
+                </a>
+            {% endfor %}
+        </div>
+    {% else %}
+        <div class="alert alert-info">
+            Уроков пока нет. <a href="{{ url_for('add_lesson', course_id=course.id) }}">Добавьте первый урок</a>.
+        </div>
+    {% endif %}
+{% else %}
+    <h3 class="mt-4">Уроки</h3>
+    {% if course.lessons %}
+        <div class="list-group">
+            {% for lesson in course.lessons %}
+                <a href="{{ url_for('lesson', lesson_id=lesson.id) }}" class="list-group-item list-group-item-action">
+                    <div class="d-flex w-100 justify-content-between">
+                        <h5 class="mb-1">{{ lesson.title }}</h5>
+                        <small>{{ lesson.created_at.strftime('%d.%m.%Y') }}</small>
+                    </div>
+                    <p class="mb-1">{{ lesson.content[:100] }}{% if lesson.content|length > 100 %}...{% endif %}</p>
+                    <small>Тип: {% if lesson.lesson_type == 'test' %}Тест{% else %}Текстовое задание{% endif %}</small>
+                </a>
+            {% endfor %}
+        </div>
+    {% else %}
+        <p class="text-muted">Уроков пока нет</p>
+    {% endif %}
+{% endif %}
+
+<a href="{{ url_for('index') }}" class="btn btn-secondary mt-3">Назад</a>
+{% endblock %}
