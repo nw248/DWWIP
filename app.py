@@ -75,9 +75,26 @@ def login():
             user_data = cur.fetchone()
             
             if user_data and check_password_hash(user_data['password_hash'], password):
-                user = User.from_db_row(user_data)
-                login_user(user)
-                return redirect(url_for('index'))
+                # ВАЖНО: НЕ используем from_db_row, а получаем пользователя через SQLAlchemy
+                user = User.query.get(user_data['id'])
+                if user:
+                    login_user(user)
+                    flash('Вход выполнен успешно!', 'success')
+                    return redirect(url_for('index'))
+                else:
+                    # Если пользователь не найден в SQLAlchemy, создаём сессию
+                    user = User(
+                        email=user_data['email'],
+                        name=user_data['name'],
+                        role=user_data['role'],
+                        group_id=user_data['group_id']
+                    )
+                    user.id = user_data['id']
+                    user.password_hash = user_data['password_hash']
+                    db.session.add(user)
+                    db.session.commit()
+                    login_user(user)
+                    return redirect(url_for('index'))
             else:
                 flash('Неверный email или пароль', 'danger')
         except Exception as e:
@@ -188,12 +205,15 @@ def create_course():
         return redirect(url_for('index'))
     
     if request.method == 'POST':
-        title = request.form.get('title')
-        description = request.form.get('description')
+        title = request.form.get('title', '').strip()
+        description = request.form.get('description', '').strip()
         
+        # ВАЖНО: проверка на пустое название
         if not title:
             flash('Название курса обязательно', 'danger')
             return redirect(url_for('create_course'))
+        
+        # ... остальной код создания курса ...
         
         conn = get_db_connection()
         cur = conn.cursor()
@@ -766,7 +786,7 @@ def add_user():
         
         user = User(
             email=email,
-            password_hash=generate_password_hash(password),
+            password_hash=generate_password_hash(password),  # <-- ДОЛЖНО БЫТЬ
             name=name,
             role=role,
             group_id=int(group_id) if group_id and group_id != '' else None
