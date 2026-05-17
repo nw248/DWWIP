@@ -444,6 +444,32 @@ def course_group(course_id, group_id):
     
     return render_template('course_group.html', course=course, group=group, lessons=lessons, students=students)
 
+@app.route('/admin/delete_group/<int:group_id>', methods=['POST'])
+@login_required
+def delete_group(group_id):
+    if current_user.role != 'admin':
+        flash('Доступ запрещен', 'danger')
+        return redirect(url_for('index'))
+    
+    group = Group.query.get_or_404(group_id)
+    group_name = group.name
+    
+    # У всех студентов этой группы сбрасываем group_id
+    for student in group.students:
+        student.group_id = None
+    
+    # Удаляем связи группы с уроками (через модель GroupLesson)
+    GroupLesson.query.filter_by(group_id=group_id).delete()
+    
+    # Удаляем связи группы с курсами (через таблицу group_course)
+    db.session.execute(group_course.delete().where(group_course.c.group_id == group_id))
+    
+    db.session.delete(group)
+    db.session.commit()
+    
+    flash(f'Группа "{group_name}" удалена', 'success')
+    return redirect(url_for('admin_dashboard'))
+
 @app.route('/course/<int:course_id>/group/<int:group_id>/add_lesson', methods=['GET', 'POST'])
 @login_required
 def add_lesson_to_group(course_id, group_id):
