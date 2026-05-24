@@ -71,7 +71,8 @@ class Lesson(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     title = db.Column(db.String(200), nullable=False)
     content = db.Column(db.Text, nullable=False)
-    lesson_type = db.Column(db.String(20), default='text')
+    lesson_type = db.Column(db.String(20), default='lecture')
+    files = db.Column(db.JSON, default=list)  # JSON массив имён файлов
     course_id = db.Column(db.Integer, db.ForeignKey('courses.id'), nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     
@@ -94,14 +95,9 @@ class Question(db.Model):
     
     id = db.Column(db.Integer, primary_key=True)
     text = db.Column(db.Text, nullable=False)
-    option_a = db.Column(db.String(200), nullable=False)
-    option_b = db.Column(db.String(200), nullable=False)
-    option_c = db.Column(db.String(200), nullable=False)
-    option_d = db.Column(db.String(200), nullable=False)
-    correct_answer = db.Column(db.String(1), nullable=False)
+    options = db.Column(db.JSON, nullable=False)  # JSON массив вариантов ответов
+    correct_answers = db.Column(db.JSON, nullable=False)  # JSON массив правильных ответов
     lesson_id = db.Column(db.Integer, db.ForeignKey('lessons.id'), nullable=False)
-    
-    test_answers = db.relationship('TestAnswer', backref='question', lazy=True, cascade='all, delete-orphan')
 
 class Assignment(db.Model):
     __tablename__ = 'assignments'

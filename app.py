@@ -1,17 +1,45 @@
-from flask import Flask, render_template, redirect, url_for, flash, request, send_from_directory
-from flask_login import LoginManager, login_user, logout_user, login_required, current_user
+from flask import Flask, request, jsonify, session
+from flask_cors import CORS
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
 from models import db, User, Group, Course, Lesson, Question, Assignment, TestAnswer, GroupLesson, teacher_course, group_course
+from flask_login import LoginManager, login_user, logout_user, login_required, current_user
+import os
+from datetime import datetime, timedelta
+import jwt
 import psycopg2
 from psycopg2.extras import RealDictCursor
+import re
 import os
-from datetime import datetime
+import json
+import subprocess
+import glob
+
+def validate_password(password):
+    if len(password) < 8:
+        return False, "Пароль должен содержать минимум 8 символов"
+    if not re.search(r'[A-Z]', password):
+        return False, "Пароль должен содержать хотя бы одну заглавную букву"
+    if not re.search(r'[!@#$%^&*()_+\-=\[\]{};:""\\|,.<>\/?]', password):
+        return False, "Пароль должен содержать хотя бы один специальный символ"
+    return True, "OK"
 
 app = Flask(__name__)
-app.secret_key = 'your-secret-key-change-this-in-production'
+app.config['SECRET_KEY'] = 'your-secret-key-change-in-production'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'postgresql://postgres:123@localhost/distance_learning'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['UPLOAD_FOLDER'] = 'uploads'
+os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
-# Конфигурация базы данных PostgreSQL
+# CORS для Vue.js (порт 5173)
+CORS(app, origins=['http://localhost:5173'], supports_credentials=True)
+
+db.init_app(app)
+login_manager = LoginManager()
+login_manager.init_app(app)
+login_manager.login_view = None
+
+# Конфигурация базы данных для сырых SQL-запросов
 DB_CONFIG = {
     'host': 'localhost',
     'database': 'distance_learning',
@@ -24,630 +52,730 @@ def get_db_connection():
     conn.autocommit = False
     return conn
 
-app.config['SQLALCHEMY_DATABASE_URI'] = f"postgresql://{DB_CONFIG['user']}:{DB_CONFIG['password']}@{DB_CONFIG['host']}/{DB_CONFIG['database']}"
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['UPLOAD_FOLDER'] = 'uploads'
-os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
-
-db.init_app(app)
-login_manager = LoginManager()
-login_manager.init_app(app)
-login_manager.login_view = 'login'
-
 @login_manager.user_loader
 def load_user(user_id):
-    conn = get_db_connection()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-    try:
-        cur.execute("SELECT * FROM users WHERE id = %s", (user_id,))
-        user_data = cur.fetchone()
-        if user_data:
-            return User.from_db_row(user_data)
-        return None
-    except Exception as e:
-        print(f"Ошибка загрузки пользователя: {e}")
-        return None
-    finally:
-        cur.close()
-        conn.close()
+    return User.query.get(int(user_id))
 
-# Создание таблиц
-with app.app_context():
-    db.create_all()
-    print("Таблицы созданы")
+# ============ АУТЕНТИФИКАЦИЯ ============
 
-# ====================== МАРШРУТЫ ======================
-
-@app.route('/login', methods=['GET', 'POST'])
-def login():
-    if current_user.is_authenticated:
-        return redirect(url_for('index'))
+@app.route('/api/login', methods=['POST'])
+def api_login():
+    data = request.get_json()
+    email = data.get('email')
+    password = data.get('password')
     
-    if request.method == 'POST':
-        email = request.form.get('email')
-        password = request.form.get('password')
-        
-        conn = get_db_connection()
-        cur = conn.cursor(cursor_factory=RealDictCursor)
-        
-        try:
-            cur.execute("SELECT * FROM users WHERE email = %s", (email,))
-            user_data = cur.fetchone()
-            
-            if user_data and check_password_hash(user_data['password_hash'], password):
-                # ВАЖНО: НЕ используем from_db_row, а получаем пользователя через SQLAlchemy
-                user = User.query.get(user_data['id'])
-                if user:
-                    login_user(user)
-                    flash('Вход выполнен успешно!', 'success')
-                    return redirect(url_for('index'))
-                else:
-                    # Если пользователь не найден в SQLAlchemy, создаём сессию
-                    user = User(
-                        email=user_data['email'],
-                        name=user_data['name'],
-                        role=user_data['role'],
-                        group_id=user_data['group_id']
-                    )
-                    user.id = user_data['id']
-                    user.password_hash = user_data['password_hash']
-                    db.session.add(user)
-                    db.session.commit()
-                    login_user(user)
-                    return redirect(url_for('index'))
-            else:
-                flash('Неверный email или пароль', 'danger')
-        except Exception as e:
-            flash(f'Ошибка при входе: {str(e)}', 'danger')
-        finally:
-            cur.close()
-            conn.close()
-    
-    return render_template('login.html')
+    user = User.query.filter_by(email=email).first()
+    if user and check_password_hash(user.password_hash, password):
+        login_user(user)
+        return jsonify({
+            'success': True,
+            'user': {
+                'id': user.id,
+                'name': user.name,
+                'email': user.email,
+                'role': user.role,
+                'group_id': user.group_id
+            }
+        })
+    return jsonify({'success': False, 'message': 'Неверный email или пароль'}), 401
 
-@app.route('/logout')
+@app.route('/api/logout', methods=['POST'])
 @login_required
-def logout():
+def api_logout():
     logout_user()
-    flash('Вы вышли из системы', 'info')
-    return redirect('/login')
+    return jsonify({'success': True})
 
-@app.route('/')
+@app.route('/api/me', methods=['GET'])
 @login_required
-def index():
+def api_me():
+    return jsonify({
+        'id': current_user.id,
+        'name': current_user.name,
+        'email': current_user.email,
+        'role': current_user.role,
+        'group_id': current_user.group_id
+    })
+
+# ============ КУРСЫ ============
+
+@app.route('/api/courses', methods=['GET'])
+@login_required
+def api_get_courses():
+    print(f"DEBUG: current_user.id={current_user.id}, role={current_user.role}")
+    
+    # Для администратора — показываем все курсы
     if current_user.role == 'admin':
-        return redirect(url_for('admin_dashboard'))
+        courses = Course.query.all()
+        return jsonify([{
+            'id': c.id,
+            'title': c.title,
+            'description': c.description,
+            'lessons_count': len(c.lessons),
+            'created_at': c.created_at.isoformat() if c.created_at else None
+        } for c in courses])
+    
     elif current_user.role == 'teacher':
         conn = get_db_connection()
         cur = conn.cursor(cursor_factory=RealDictCursor)
-        try:
-            cur.execute("""
-                SELECT c.id, c.title, c.description, c.created_at,
-                       COUNT(l.id) as lessons_count
-                FROM courses c
-                JOIN teacher_course tc ON c.id = tc.course_id
-                LEFT JOIN lessons l ON c.id = l.course_id
-                WHERE tc.teacher_id = %s
-                GROUP BY c.id, c.title, c.description, c.created_at
-                ORDER BY c.created_at DESC
-            """, (current_user.id,))
-            courses_data = cur.fetchall()
-            
-            # Преобразуем в список словарей для шаблона
-            courses = []
-            for row in courses_data:
-                courses.append({
-                    'id': row['id'],
-                    'title': row['title'],
-                    'description': row['description'],
-                    'created_at': row['created_at'],
-                    'lessons_count': row['lessons_count']
-                })
-            
-            print(f"DEBUG: Teacher {current_user.name} has {len(courses)} courses")
-            for c in courses:
-                print(f"  - {c['title']} (id={c['id']}, lessons={c['lessons_count']})")
-                
-        except Exception as e:
-            print(f"DEBUG: Ошибка загрузки курсов: {e}")
-            courses = []
-        finally:
-            cur.close()
-            conn.close()
+        cur.execute("""
+            SELECT c.id, c.title, c.description, c.created_at,
+                   COUNT(l.id) as lessons_count
+            FROM courses c
+            JOIN teacher_course tc ON c.id = tc.course_id
+            LEFT JOIN lessons l ON c.id = l.course_id
+            WHERE tc.teacher_id = %s
+            GROUP BY c.id
+            ORDER BY c.created_at DESC
+        """, (current_user.id,))
+        courses = cur.fetchall()
+        cur.close()
+        conn.close()
         
-        return render_template('index_teacher.html', courses=courses, role='teacher')
-    else:
-        # Студент
-        if not current_user.group_id:
-            flash('Вы не прикреплены ни к одной группе. Обратитесь к администратору.', 'warning')
-            return render_template('index_student.html', courses=[], role='student')
+        return jsonify([{
+            'id': c['id'],
+            'title': c['title'],
+            'description': c['description'],
+            'lessons_count': c['lessons_count'],
+            'created_at': c['created_at'].isoformat() if c['created_at'] else None
+        } for c in courses])
         
+    elif current_user.role == 'student' and current_user.group_id:
         conn = get_db_connection()
         cur = conn.cursor(cursor_factory=RealDictCursor)
-        try:
-            cur.execute("""
-                SELECT c.id, c.title, c.description, c.created_at,
-                       COUNT(DISTINCT l.id) as lessons_count
-                FROM courses c
-                JOIN group_course gc ON c.id = gc.course_id
-                LEFT JOIN group_lessons gl ON gc.group_id = gl.group_id
-                LEFT JOIN lessons l ON gl.lesson_id = l.id AND l.course_id = c.id
-                WHERE gc.group_id = %s
-                GROUP BY c.id, c.title, c.description, c.created_at
-                ORDER BY c.created_at DESC
-            """, (current_user.group_id,))
-            courses_data = cur.fetchall()
-            
-            courses = []
-            for row in courses_data:
-                courses.append({
-                    'id': row['id'],
-                    'title': row['title'],
-                    'description': row['description'],
-                    'created_at': row['created_at'],
-                    'lessons_count': row['lessons_count']
-                })
-            
-            print(f"DEBUG: Student {current_user.name} (group_id={current_user.group_id}) has {len(courses)} courses")
-        except Exception as e:
-            print(f"DEBUG: Ошибка загрузки курсов: {e}")
-            courses = []
-        finally:
-            cur.close()
-            conn.close()
+        cur.execute("""
+            SELECT c.id, c.title, c.description, c.created_at,
+                   COUNT(l.id) as lessons_count
+            FROM courses c
+            JOIN group_course gc ON c.id = gc.course_id
+            LEFT JOIN lessons l ON c.id = l.course_id
+            WHERE gc.group_id = %s
+            GROUP BY c.id
+            ORDER BY c.created_at DESC
+        """, (current_user.group_id,))
+        courses = cur.fetchall()
+        cur.close()
+        conn.close()
         
-        return render_template('index_student.html', courses=courses, role='student')
-@app.route('/create_course', methods=['GET', 'POST'])
-@login_required
-def create_course():
-    if current_user.role != 'teacher':
-        flash('Доступ запрещен. Только преподаватели могут создавать курсы', 'danger')
-        return redirect(url_for('index'))
-    
-    if request.method == 'POST':
-        title = request.form.get('title', '').strip()
-        description = request.form.get('description', '').strip()
-        
-        # ВАЖНО: проверка на пустое название
-        if not title:
-            flash('Название курса обязательно', 'danger')
-            return redirect(url_for('create_course'))
-        
-        # ... остальной код создания курса ...
-        
-        conn = get_db_connection()
-        cur = conn.cursor()
-        
-        try:
-            # 1. Создаём курс
-            cur.execute("""
-                INSERT INTO courses (title, description, created_at)
-                VALUES (%s, %s, %s)
-                RETURNING id
-            """, (title, description, datetime.utcnow()))
-            
-            course_id = cur.fetchone()[0]
-            print(f"DEBUG: Создан курс id={course_id}, title={title}")
-            
-            # 2. Добавляем связь преподаватель-курс
-            cur.execute("""
-                INSERT INTO teacher_course (teacher_id, course_id)
-                VALUES (%s, %s)
-            """, (current_user.id, course_id))
-            
-            conn.commit()
-            print(f"DEBUG: Связь добавлена: teacher={current_user.id}, course={course_id}")
-            
-            flash(f'Курс "{title}" успешно создан', 'success')
-            
-        except Exception as e:
-            conn.rollback()
-            print(f"DEBUG: Ошибка: {e}")
-            flash(f'Ошибка при создании курса: {str(e)}', 'danger')
-        finally:
-            cur.close()
-            conn.close()
-        
-        return redirect(url_for('index'))
-    
-    return render_template('create_course.html')
+        return jsonify([{
+            'id': c['id'],
+            'title': c['title'],
+            'description': c['description'],
+            'lessons_count': c['lessons_count'],
+            'created_at': c['created_at'].isoformat() if c['created_at'] else None
+        } for c in courses])
+    else:
+        return jsonify([])
 
-@app.route('/course/<int:course_id>')
+@app.route('/api/admin/courses', methods=['GET'])
 @login_required
-def course(course_id):
+def api_admin_get_courses():
+    if current_user.role != 'admin':
+        return jsonify({'error': 'Доступ запрещен'}), 403
+    
+    courses = Course.query.all()
+    return jsonify([{
+        'id': c.id,
+        'title': c.title,
+        'description': c.description,
+        'lessons_count': len(c.lessons),
+        'created_at': c.created_at.isoformat() if c.created_at else None,
+        'teachers': ', '.join([t.name for t in c.teachers])
+    } for c in courses])
+
+@app.route('/api/courses', methods=['POST'])
+@login_required
+def api_create_course():
+    if current_user.role not in ['admin', 'teacher']:
+        return jsonify({'error': 'Доступ запрещен'}), 403
+    
+    data = request.get_json()
+    title = data.get('title')
+    description = data.get('description')
+    
+    if not title:
+        return jsonify({'error': 'Название курса обязательно'}), 400
+    
+    course = Course(title=title, description=description)
+    db.session.add(course)
+    db.session.flush()
+    
     if current_user.role == 'teacher':
-        conn = get_db_connection()
-        cur = conn.cursor(cursor_factory=RealDictCursor)
-        try:
-            cur.execute("""
-                SELECT * FROM teacher_course 
-                WHERE teacher_id = %s AND course_id = %s
-            """, (current_user.id, course_id))
-            has_access = cur.fetchone()
-            
-            if not has_access:
-                flash('У вас нет доступа к этому курсу', 'danger')
-                return redirect(url_for('index'))
-        finally:
-            cur.close()
-            conn.close()
-        
-        course = Course.query.get_or_404(course_id)
-        groups = course.groups
-        return render_template('course_teacher.html', course=course, groups=groups)
-    else:
-        if not current_user.group_id:
-            flash('Вы не прикреплены ни к одной группе', 'danger')
-            return redirect(url_for('index'))
-        
-        conn = get_db_connection()
-        cur = conn.cursor(cursor_factory=RealDictCursor)
-        try:
-            cur.execute("""
-                SELECT * FROM group_course 
-                WHERE group_id = %s AND course_id = %s
-            """, (current_user.group_id, course_id))
-            has_access = cur.fetchone()
-            
-            if not has_access:
-                flash('У вас нет доступа к этому курсу', 'danger')
-                return redirect(url_for('index'))
-        finally:
-            cur.close()
-            conn.close()
-        
-        course = Course.query.get_or_404(course_id)
-        
-        group_lessons = GroupLesson.query.filter_by(group_id=current_user.group_id).all()
-        lesson_ids = [gl.lesson_id for gl in group_lessons]
-        lessons = Lesson.query.filter(Lesson.id.in_(lesson_ids), Lesson.course_id == course.id).all()
-        
-        return render_template('course_student.html', course=course, lessons=lessons)
+        course.teachers.append(current_user)
+    elif current_user.role == 'admin':
+        teacher_ids = data.get('teacher_ids', [])
+        for tid in teacher_ids:
+            teacher = User.query.get(tid)
+            if teacher and teacher.role == 'teacher':
+                course.teachers.append(teacher)
     
-@app.route('/admin/delete_course/<int:course_id>', methods=['POST'])
+    db.session.commit()
+    return jsonify({'success': True, 'course_id': course.id})
+
+@app.route('/api/courses/<int:course_id>', methods=['DELETE'])
 @login_required
-def delete_course(course_id):
-    if current_user.role != 'admin':
-        flash('Доступ запрещен', 'danger')
-        return redirect(url_for('index'))
+def api_delete_course(course_id):
+    if current_user.role not in ['admin', 'teacher']:
+        return jsonify({'error': 'Доступ запрещен'}), 403
     
     course = Course.query.get_or_404(course_id)
-    course_title = course.title
     
-    # Удаляем связи teacher_course
-    db.session.execute(teacher_course.delete().where(teacher_course.c.course_id == course_id))
+    if current_user.role == 'teacher' and course not in current_user.courses:
+        return jsonify({'error': 'У вас нет доступа'}), 403
     
-    # Удаляем связи group_course
-    db.session.execute(group_course.delete().where(group_course.c.course_id == course_id))
-    
-    # Удаляем связи group_lessons и сами уроки каскадно удалятся
     db.session.delete(course)
     db.session.commit()
-    
-    flash(f'Курс "{course_title}" удален', 'success')
-    return redirect(url_for('admin_dashboard'))
+    return jsonify({'success': True})
 
-@app.route('/course/delete/<int:course_id>', methods=['POST'])
+@app.route('/api/courses/<int:course_id>', methods=['GET'])
 @login_required
-def delete_course_teacher(course_id):
-    if current_user.role != 'teacher':
-        flash('Доступ запрещен', 'danger')
-        return redirect(url_for('index'))
+def api_get_course(course_id):
+    course = Course.query.get_or_404(course_id)
+    return jsonify({
+        'id': course.id,
+        'title': course.title,
+        'description': course.description,
+        'created_at': course.created_at.isoformat() if course.created_at else None
+    })
+
+@app.route('/api/courses/<int:course_id>/groups', methods=['GET'])
+@login_required
+def api_get_course_groups(course_id):
+    course = Course.query.get_or_404(course_id)
     
-    # Проверяем, что преподаватель имеет доступ к курсу
-    conn = get_db_connection()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-    try:
-        cur.execute("""
-            SELECT * FROM teacher_course 
-            WHERE teacher_id = %s AND course_id = %s
-        """, (current_user.id, course_id))
-        has_access = cur.fetchone()
-        
-        if not has_access:
-            flash('У вас нет доступа к этому курсу', 'danger')
-            return redirect(url_for('index'))
-    finally:
-        cur.close()
-        conn.close()
+    groups_data = []
+    for group in course.groups:
+        groups_data.append({
+            'id': group.id,
+            'name': group.name,
+            'students_count': len(group.students),
+            'lessons_count': len(group.group_lessons)
+        })
+    
+    return jsonify(groups_data)
+
+@app.route('/api/courses/<int:course_id>/groups', methods=['POST'])
+@login_required
+def api_add_groups_to_course(course_id):
+    if current_user.role not in ['admin', 'teacher']:
+        return jsonify({'error': 'Доступ запрещен'}), 403
     
     course = Course.query.get_or_404(course_id)
-    course_title = course.title
     
-    # Удаляем связи teacher_course
-    db.session.execute(teacher_course.delete().where(teacher_course.c.course_id == course_id))
+    if current_user.role == 'teacher' and course not in current_user.courses:
+        return jsonify({'error': 'У вас нет доступа к этому курсу'}), 403
     
-    # Удаляем связи group_course
-    db.session.execute(group_course.delete().where(group_course.c.course_id == course_id))
+    data = request.get_json()
+    group_ids = data.get('groups', [])
     
-    # Удаляем связи group_lessons и сами уроки каскадно удалятся
-    db.session.delete(course)
+    course.groups = []
+    for gid in group_ids:
+        group = Group.query.get(gid)
+        if group:
+            course.groups.append(group)
+    
     db.session.commit()
-    
-    flash(f'Курс "{course_title}" удален', 'success')
-    return redirect(url_for('index'))
+    return jsonify({'success': True})
 
-@app.route('/course/<int:course_id>/add_students', methods=['GET', 'POST'])
+@app.route('/api/courses/<int:course_id>/teachers', methods=['GET'])
 @login_required
-def add_students_to_course(course_id):
-    if current_user.role != 'teacher':
-        flash('Доступ запрещен', 'danger')
-        return redirect(url_for('index'))
-    
-    conn = get_db_connection()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-    try:
-        cur.execute("""
-            SELECT * FROM teacher_course 
-            WHERE teacher_id = %s AND course_id = %s
-        """, (current_user.id, course_id))
-        has_access = cur.fetchone()
-        
-        if not has_access:
-            flash('У вас нет доступа к этому курсу', 'danger')
-            return redirect(url_for('index'))
-    finally:
-        cur.close()
-        conn.close()
+def api_get_course_teachers(course_id):
+    course = Course.query.get_or_404(course_id)
+    return jsonify([{
+        'id': t.id,
+        'name': t.name,
+        'email': t.email
+    } for t in course.teachers])
+
+@app.route('/api/courses/<int:course_id>', methods=['PUT'])
+@login_required
+def api_update_course(course_id):
+    if current_user.role not in ['admin', 'teacher']:
+        return jsonify({'error': 'Доступ запрещен'}), 403
     
     course = Course.query.get_or_404(course_id)
     
-    if request.method == 'POST':
-        group_ids = request.form.getlist('groups')
-        course.groups = []
-        for group_id in group_ids:
-            group = Group.query.get(int(group_id))
-            if group:
-                course.groups.append(group)
-        db.session.commit()
-        flash('Группы успешно добавлены к курсу', 'success')
-        return redirect(url_for('course', course_id=course.id))
+    if current_user.role == 'teacher' and course not in current_user.courses:
+        return jsonify({'error': 'У вас нет доступа'}), 403
     
-    all_groups = Group.query.all()
-    current_groups = course.groups
-    return render_template('add_students_to_course.html', course=course, all_groups=all_groups, current_groups=current_groups)
+    data = request.get_json()
+    
+    course.title = data.get('title', course.title)
+    course.description = data.get('description', course.description)
+    
+    if current_user.role == 'admin' and data.get('teacher_ids') is not None:
+        course.teachers = []
+        for tid in data['teacher_ids']:
+            teacher = User.query.get(tid)
+            if teacher and teacher.role == 'teacher':
+                course.teachers.append(teacher)
+    
+    db.session.commit()
+    return jsonify({'success': True})
 
-@app.route('/course/<int:course_id>/group/<int:group_id>')
+# ============ ГРУППЫ ============
+
+@app.route('/api/groups', methods=['GET'])
 @login_required
-def course_group(course_id, group_id):
-    if current_user.role != 'teacher':
-        flash('Доступ запрещен', 'danger')
-        return redirect(url_for('index'))
+def api_get_groups():
+    # Разрешаем доступ и преподавателям, и администраторам
+    if current_user.role not in ['admin', 'teacher']:
+        return jsonify({'error': 'Доступ запрещен'}), 403
     
-    conn = get_db_connection()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-    try:
-        cur.execute("""
-            SELECT * FROM teacher_course 
-            WHERE teacher_id = %s AND course_id = %s
-        """, (current_user.id, course_id))
-        has_access = cur.fetchone()
-        
-        if not has_access:
-            flash('У вас нет доступа к этому курсу', 'danger')
-            return redirect(url_for('index'))
-    finally:
-        cur.close()
-        conn.close()
-    
-    course = Course.query.get_or_404(course_id)
+    groups = Group.query.all()
+    return jsonify([{
+        'id': g.id,
+        'name': g.name,
+        'students_count': len(g.students)
+    } for g in groups])
+
+@app.route('/api/groups/<int:group_id>', methods=['GET'])
+@login_required
+def api_get_group(group_id):
     group = Group.query.get_or_404(group_id)
-    
-    if group not in course.groups:
-        flash('Эта группа не добавлена к курсу', 'danger')
-        return redirect(url_for('course', course_id=course.id))
-    
-    group_lessons = GroupLesson.query.filter_by(group_id=group.id).all()
-    lesson_ids = [gl.lesson_id for gl in group_lessons]
-    lessons = Lesson.query.filter(Lesson.id.in_(lesson_ids), Lesson.course_id == course.id).all()
-    students = User.query.filter_by(group_id=group.id, role='student').all()
-    
-    return render_template('course_group.html', course=course, group=group, lessons=lessons, students=students)
+    return jsonify({
+        'id': group.id,
+        'name': group.name,
+        'students_count': len(group.students)
+    })
 
-@app.route('/admin/delete_group/<int:group_id>', methods=['POST'])
+@app.route('/api/groups', methods=['POST'])
 @login_required
-def delete_group(group_id):
+def api_create_group():
     if current_user.role != 'admin':
-        flash('Доступ запрещен', 'danger')
-        return redirect(url_for('index'))
+        return jsonify({'error': 'Доступ запрещен'}), 403
+    
+    data = request.get_json()
+    name = data.get('name')
+    
+    if not name:
+        return jsonify({'error': 'Название группы обязательно'}), 400
+    
+    group = Group(name=name)
+    db.session.add(group)
+    db.session.commit()
+    return jsonify({'success': True, 'group_id': group.id})
+
+@app.route('/api/groups/<int:group_id>', methods=['DELETE'])
+@login_required
+def api_delete_group(group_id):
+    if current_user.role != 'admin':
+        return jsonify({'error': 'Доступ запрещен'}), 403
     
     group = Group.query.get_or_404(group_id)
-    group_name = group.name
     
-    # У всех студентов этой группы сбрасываем group_id
     for student in group.students:
         student.group_id = None
     
-    # Удаляем связи группы с уроками (через модель GroupLesson)
-    GroupLesson.query.filter_by(group_id=group_id).delete()
-    
-    # Удаляем связи группы с курсами (через таблицу group_course)
-    db.session.execute(group_course.delete().where(group_course.c.group_id == group_id))
-    
     db.session.delete(group)
     db.session.commit()
-    
-    flash(f'Группа "{group_name}" удалена', 'success')
-    return redirect(url_for('admin_dashboard'))
+    return jsonify({'success': True})
 
-@app.route('/course/<int:course_id>/group/<int:group_id>/add_lesson', methods=['GET', 'POST'])
+@app.route('/api/lessons/<int:lesson_id>/update', methods=['POST'])
 @login_required
-def add_lesson_to_group(course_id, group_id):
-    if current_user.role != 'teacher':
-        flash('Доступ запрещен', 'danger')
-        return redirect(url_for('index'))
-    
-    conn = get_db_connection()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-    try:
-        cur.execute("""
-            SELECT * FROM teacher_course 
-            WHERE teacher_id = %s AND course_id = %s
-        """, (current_user.id, course_id))
-        has_access = cur.fetchone()
-        
-        if not has_access:
-            flash('У вас нет доступа к этому курсу', 'danger')
-            return redirect(url_for('index'))
-    finally:
-        cur.close()
-        conn.close()
-    
-    course = Course.query.get_or_404(course_id)
-    group = Group.query.get_or_404(group_id)
-    
-    if group not in course.groups:
-        flash('Эта группа не добавлена к курсу', 'danger')
-        return redirect(url_for('course', course_id=course.id))
-    
-    if request.method == 'POST':
-        title = request.form.get('title')
-        content = request.form.get('content')
-        lesson_type = request.form.get('lesson_type')
-        
-        lesson = Lesson(title=title, content=content, lesson_type=lesson_type, course_id=course.id)
-        db.session.add(lesson)
-        db.session.flush()
-        
-        group_lesson = GroupLesson(group_id=group.id, lesson_id=lesson.id)
-        db.session.add(group_lesson)
-        
-        if lesson_type == 'test':
-            questions_count = int(request.form.get('questions_count', 0))
-            for i in range(questions_count):
-                question_text = request.form.get(f'question_{i}_text')
-                option_a = request.form.get(f'question_{i}_a')
-                option_b = request.form.get(f'question_{i}_b')
-                option_c = request.form.get(f'question_{i}_c')
-                option_d = request.form.get(f'question_{i}_d')
-                correct = request.form.get(f'question_{i}_correct')
-                
-                if question_text and option_a and correct:
-                    question = Question(
-                        text=question_text,
-                        option_a=option_a,
-                        option_b=option_b,
-                        option_c=option_c,
-                        option_d=option_d,
-                        correct_answer=correct,
-                        lesson_id=lesson.id
-                    )
-                    db.session.add(question)
-        
-        db.session.commit()
-        flash(f'Урок "{title}" успешно добавлен для группы "{group.name}"', 'success')
-        return redirect(url_for('course_group', course_id=course.id, group_id=group.id))
-    
-    return render_template('add_lesson_to_group.html', course=course, group=group)
-
-@app.route('/group_lesson/<int:group_lesson_id>')
-@login_required
-def group_lesson(group_lesson_id):
-    group_lesson = GroupLesson.query.get_or_404(group_lesson_id)
-    lesson = group_lesson.lesson
-    group = group_lesson.group
-    course = lesson.course
-    
-    if current_user.role == 'teacher':
-        # Проверяем доступ к курсу
-        conn = get_db_connection()
-        cur = conn.cursor(cursor_factory=RealDictCursor)
-        try:
-            cur.execute("""
-                SELECT * FROM teacher_course 
-                WHERE teacher_id = %s AND course_id = %s
-            """, (current_user.id, course.id))
-            has_access = cur.fetchone()
-            
-            if not has_access:
-                flash('У вас нет доступа', 'danger')
-                return redirect(url_for('index'))
-        finally:
-            cur.close()
-            conn.close()
-        
-        assignments = Assignment.query.filter_by(lesson_id=lesson.id).all()
-        group_assignments = [a for a in assignments if a.student.group_id == group.id]
-        
-        return render_template('group_lesson_teacher.html', 
-                               lesson=lesson, course=course, 
-                               group=group, assignments=group_assignments)
-    else:
-        # Студент
-        if current_user.group_id != group.id:
-            flash('У вас нет доступа', 'danger')
-            return redirect(url_for('index'))
-        
-        assignment = Assignment.query.filter_by(
-            student_id=current_user.id, 
-            lesson_id=lesson.id
-        ).first()
-        
-        if lesson.lesson_type == 'test':
-            if assignment and assignment.test_answers:
-                return render_template('group_lesson_student.html', 
-                                       lesson=lesson, course=course, 
-                                       group=group, assignment=assignment)
-            else:
-                return redirect(url_for('take_test', lesson_id=lesson.id, group_id=group.id))
-        
-        return render_template('group_lesson_student.html', 
-                               lesson=lesson, course=course, 
-                               group=group, assignment=assignment)
-
-@app.route('/lesson/<int:lesson_id>/submit', methods=['POST'])
-@login_required
-def submit_assignment(lesson_id):
+def api_update_assignment(lesson_id):
     if current_user.role != 'student':
-        flash('Доступ запрещен', 'danger')
-        return redirect(url_for('index'))
+        return jsonify({'error': 'Доступ запрещен'}), 403
     
     lesson = Lesson.query.get_or_404(lesson_id)
-    course = lesson.course
     
-    # Проверяем, есть ли группа у студента
-    if not current_user.group_id:
-        flash('Вы не прикреплены ни к одной группе', 'danger')
-        return redirect(url_for('index'))
-    
-    # Проверяем, есть ли доступ к курсу через группу (сырой SQL)
-    conn = get_db_connection()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-    try:
-        cur.execute("""
-            SELECT * FROM group_course 
-            WHERE group_id = %s AND course_id = %s
-        """, (current_user.group_id, course.id))
-        has_access = cur.fetchone()
-        
-        if not has_access:
-            flash('У вас нет доступа к этому курсу', 'danger')
-            return redirect(url_for('index'))
-    finally:
-        cur.close()
-        conn.close()
-    
-    # Проверяем, что урок назначен группе студента
     group_lesson = GroupLesson.query.filter_by(
         group_id=current_user.group_id, 
-        lesson_id=lesson.id
+        lesson_id=lesson_id
     ).first()
     
     if not group_lesson:
-        flash('Этот урок не доступен вашей группе', 'danger')
-        return redirect(url_for('index'))
+        return jsonify({'error': 'Урок не доступен вашей группе'}), 403
     
-    answer_text = request.form.get('answer_text')
+    answer_text = request.form.get('answer_text', '')
     answer_file = request.files.get('answer_file')
     
     filename = None
     if answer_file and answer_file.filename:
-        filename = secure_filename(f"{current_user.id}_{lesson.id}_{answer_file.filename}")
+        from werkzeug.utils import secure_filename
+        filename = secure_filename(f"{current_user.id}_{lesson_id}_{answer_file.filename}")
         answer_file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
     
     existing = Assignment.query.filter_by(
-        student_id=current_user.id, 
-        lesson_id=lesson.id
+        student_id=current_user.id,
+        lesson_id=lesson_id
+    ).first()
+    
+    if existing:
+        existing.answer_text = answer_text
+        if filename:
+            existing.answer_file = filename
+        existing.submitted_at = datetime.utcnow()
+        db.session.commit()
+        return jsonify({'success': True, 'message': 'Ответ обновлён'})
+    
+    return jsonify({'error': 'Ответ не найден'}), 404
+
+# ============ ПОЛЬЗОВАТЕЛИ ============
+
+@app.route('/api/users', methods=['GET'])
+@login_required
+def api_get_users():
+    if current_user.role != 'admin':
+        return jsonify({'error': 'Доступ запрещен'}), 403
+    
+    users = User.query.all()
+    return jsonify([{
+        'id': u.id,
+        'name': u.name,
+        'email': u.email,
+        'role': u.role,
+        'group_id': u.group_id,
+        'group_name': u.group.name if u.group else None
+    } for u in users])
+
+@app.route('/api/users/<int:user_id>', methods=['GET'])
+@login_required
+def api_get_user(user_id):
+    if current_user.role != 'admin':
+        return jsonify({'error': 'Доступ запрещен'}), 403
+    
+    user = User.query.get_or_404(user_id)
+    return jsonify({
+        'id': user.id,
+        'email': user.email,
+        'name': user.name,
+        'role': user.role,
+        'group_id': user.group_id
+    })
+
+@app.route('/api/users', methods=['POST'])
+@login_required
+def api_create_user():
+    if current_user.role != 'admin':
+        return jsonify({'error': 'Доступ запрещен'}), 403
+    
+    data = request.get_json()
+    
+    # ВАЛИДАЦИЯ ПАРОЛЯ
+    valid, msg = validate_password(data['password'])
+    if not valid:
+        return jsonify({'error': msg}), 400
+    
+    if User.query.filter_by(email=data['email']).first():
+        return jsonify({'error': 'Пользователь с таким email уже существует'}), 400
+    
+    user = User(
+        email=data['email'],
+        password_hash=generate_password_hash(data['password']),
+        name=data['name'],
+        role=data['role'],
+        group_id=data.get('group_id')
+    )
+    db.session.add(user)
+    db.session.commit()
+    return jsonify({'success': True, 'user_id': user.id})
+
+@app.route('/api/users/<int:user_id>', methods=['PUT'])
+@login_required
+def api_update_user(user_id):
+    if current_user.role != 'admin':
+        return jsonify({'error': 'Доступ запрещен'}), 403
+    
+    user = User.query.get_or_404(user_id)
+    data = request.get_json()
+    
+    if 'email' in data:
+        existing = User.query.filter(User.email == data['email'], User.id != user_id).first()
+        if existing:
+            return jsonify({'error': 'Email уже используется'}), 400
+        user.email = data['email']
+    
+    if data.get('new_password'):
+        # ВАЛИДАЦИЯ НОВОГО ПАРОЛЯ
+        valid, msg = validate_password(data['new_password'])
+        if not valid:
+            return jsonify({'error': msg}), 400
+        user.password_hash = generate_password_hash(data['new_password'])
+    
+    db.session.commit()
+    return jsonify({'success': True})
+
+@app.route('/api/users/<int:user_id>', methods=['DELETE'])
+@login_required
+def api_delete_user(user_id):
+    if current_user.role != 'admin':
+        return jsonify({'error': 'Доступ запрещен'}), 403
+    
+    user = User.query.get_or_404(user_id)
+    if user.role == 'admin':
+        return jsonify({'error': 'Нельзя удалить администратора'}), 400
+    
+    db.session.delete(user)
+    db.session.commit()
+    return jsonify({'success': True})
+
+@app.route('/api/admin/backup', methods=['POST'])
+@login_required
+def api_backup_database():
+    if current_user.role != 'admin':
+        return jsonify({'error': 'Доступ запрещен'}), 403
+    
+    try:
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        backup_filename = f"backup_{timestamp}.sql"
+        backup_path = os.path.join('backups', backup_filename)
+        
+        os.makedirs('backups', exist_ok=True)
+        
+        # Создаём бэкап через psycopg2 (без внешних команд)
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        with open(backup_path, 'w', encoding='utf-8') as f:
+            # Получаем все таблицы
+            cur.execute("""
+                SELECT table_name FROM information_schema.tables 
+                WHERE table_schema = 'public' 
+                ORDER BY table_name
+            """)
+            tables = cur.fetchall()
+            
+            for table in tables:
+                table_name = table[0]
+                # Получаем структуру таблицы
+                cur.execute(f"SELECT column_name, data_type FROM information_schema.columns WHERE table_name = '{table_name}' ORDER BY ordinal_position")
+                columns = cur.fetchall()
+                
+                # Получаем данные
+                cur.execute(f"SELECT * FROM {table_name}")
+                rows = cur.fetchall()
+                
+                f.write(f"-- Таблица: {table_name}\n")
+                for row in rows:
+                    f.write(f"INSERT INTO {table_name} VALUES ({','.join([str(x) if x else 'NULL' for x in row])});\n")
+                f.write("\n")
+        
+        cur.close()
+        conn.close()
+        
+        return jsonify({
+            'success': True, 
+            'message': f'Резервная копия создана: {backup_filename}',
+            'filename': backup_filename
+        })
+        
+    except Exception as e:
+        print(f"Исключение: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/admin/backup/download/<filename>', methods=['GET'])
+@login_required
+def api_download_backup(filename):
+    if current_user.role != 'admin':
+        return jsonify({'error': 'Доступ запрещен'}), 403
+    
+    from flask import send_file
+    backup_path = os.path.join('backups', filename)
+    
+    if not os.path.exists(backup_path):
+        return jsonify({'error': 'Файл не найден'}), 404
+    
+    return send_file(backup_path, as_attachment=True, download_name=filename)
+
+@app.route('/api/admin/backups', methods=['GET'])
+@login_required
+def api_list_backups():
+    if current_user.role != 'admin':
+        return jsonify({'error': 'Доступ запрещен'}), 403
+    
+    backup_files = glob.glob('backups/backup_*.sql')
+    backups = []
+    for file in backup_files:
+        name = os.path.basename(file)
+        date_str = name.replace('backup_', '').replace('.sql', '')
+        date = datetime.strptime(date_str, '%Y%m%d_%H%M%S').strftime('%d.%m.%Y %H:%M:%S')
+        backups.append({'name': name, 'date': date})
+    
+    # Сортируем по дате (новые сверху)
+    backups.sort(key=lambda x: x['name'], reverse=True)
+    
+    return jsonify(backups)
+
+# ============ УРОКИ ============
+
+@app.route('/api/lessons/<int:lesson_id>', methods=['GET'])
+@login_required
+def api_get_lesson(lesson_id):
+    lesson = Lesson.query.get_or_404(lesson_id)
+    return jsonify({
+        'id': lesson.id,
+        'title': lesson.title,
+        'content': lesson.content,
+        'lesson_type': lesson.lesson_type,
+        'files': lesson.files if hasattr(lesson, 'files') else [],
+        'course_id': lesson.course_id,
+        'created_at': lesson.created_at.isoformat() if lesson.created_at else None
+    })
+
+@app.route('/api/courses/<int:course_id>/groups/<int:group_id>/lessons', methods=['GET'])
+@login_required
+def api_get_lessons(course_id, group_id):
+    group_lessons = GroupLesson.query.filter_by(group_id=group_id).all()
+    lesson_ids = [gl.lesson_id for gl in group_lessons]
+    lessons = Lesson.query.filter(Lesson.id.in_(lesson_ids), Lesson.course_id == course_id).all()
+    
+    return jsonify([{
+        'id': l.id,
+        'title': l.title,
+        'content': l.content[:200],
+        'lesson_type': l.lesson_type,
+        'files': l.files if hasattr(l, 'files') else [],
+        'created_at': l.created_at.isoformat() if l.created_at else None
+    } for l in lessons])
+
+@app.route('/api/courses/<int:course_id>/groups/<int:group_id>/lessons/progress', methods=['GET'])
+@login_required
+def api_get_lessons_progress(course_id, group_id):
+    if current_user.role != 'teacher':
+        return jsonify({'error': 'Доступ запрещен'}), 403
+    
+    group_lessons = GroupLesson.query.filter_by(group_id=group_id).all()
+    lesson_ids = [gl.lesson_id for gl in group_lessons]
+    lessons = Lesson.query.filter(Lesson.id.in_(lesson_ids), Lesson.course_id == course_id).all()
+    
+    students = User.query.filter_by(group_id=group_id, role='student').all()
+    total_students = len(students)
+    
+    result = []
+    for lesson in lessons:
+        completed = Assignment.query.filter(
+            Assignment.lesson_id == lesson.id,
+            Assignment.student_id.in_([s.id for s in students])
+        ).count()
+        
+        progress = 0
+        if total_students > 0:
+            progress = int((completed / total_students) * 100)
+        
+        result.append({
+            'id': lesson.id,
+            'title': lesson.title,
+            'content': lesson.content[:100],
+            'lesson_type': lesson.lesson_type,
+            'progress': progress,
+            'completed': completed,
+            'total': total_students
+        })
+    
+    return jsonify(result)
+
+@app.route('/api/courses/<int:course_id>/groups/<int:group_id>/lessons', methods=['POST'])
+@login_required
+def api_create_lesson(course_id, group_id):
+    if current_user.role not in ['admin', 'teacher']:
+        return jsonify({'error': 'Доступ запрещен'}), 403
+    
+    title = request.form.get('title')
+    content = request.form.get('content')
+    lesson_type = request.form.get('lesson_type')
+    
+    # Сохраняем файлы
+    files = request.files.getlist('files')
+    filenames = []
+    for file in files:
+        if file and file.filename:
+            filename = secure_filename(f"{current_user.id}_{course_id}_{group_id}_{file.filename}")
+            file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+            filenames.append(filename)
+    
+    lesson = Lesson(
+        title=title,
+        content=content,
+        lesson_type=lesson_type,
+        files=filenames,  # Сохраняем список имён файлов
+        course_id=course_id
+    )
+    db.session.add(lesson)
+    db.session.flush()
+    
+    group_lesson = GroupLesson(group_id=group_id, lesson_id=lesson.id)
+    db.session.add(group_lesson)
+    
+    if lesson_type == 'test':
+        questions_data = json.loads(request.form.get('questions', '[]'))
+        for q in questions_data:
+            question = Question(
+                text=q['text'],
+                options=q['options'],
+                correct_answers=q['correct_answers'],
+                lesson_id=lesson.id
+            )
+            db.session.add(question)
+    
+    db.session.commit()
+    return jsonify({'success': True, 'lesson_id': lesson.id})
+
+@app.route('/api/lessons/<int:lesson_id>', methods=['DELETE'])
+@login_required
+def api_delete_lesson(lesson_id):
+    if current_user.role not in ['admin', 'teacher']:
+        return jsonify({'error': 'Доступ запрещен'}), 403
+    
+    lesson = Lesson.query.get_or_404(lesson_id)
+    
+    # Проверка прав для преподавателя
+    if current_user.role == 'teacher':
+        course = lesson.course
+        if course not in current_user.courses:
+            return jsonify({'error': 'У вас нет доступа к этому курсу'}), 403
+    
+    try:
+        # Удаляем связи группы с уроком
+        GroupLesson.query.filter_by(lesson_id=lesson_id).delete()
+        
+        # Удаляем вопросы теста
+        Question.query.filter_by(lesson_id=lesson_id).delete()
+        
+        # Удаляем ответы на тесты и сами задания
+        assignments = Assignment.query.filter_by(lesson_id=lesson_id).all()
+        for assignment in assignments:
+            TestAnswer.query.filter_by(assignment_id=assignment.id).delete()
+            db.session.delete(assignment)
+        
+        db.session.delete(lesson)
+        db.session.commit()
+        
+        return jsonify({'success': True, 'message': 'Урок удалён'})
+    except Exception as e:
+        db.session.rollback()
+        print(f"Ошибка удаления урока: {e}")
+        return jsonify({'error': str(e)}), 500
+
+# ============ ЗАДАНИЯ ============
+
+@app.route('/api/lessons/<int:lesson_id>/submit', methods=['POST'])
+@login_required
+def api_submit_assignment(lesson_id):
+    if current_user.role != 'student':
+        return jsonify({'error': 'Доступ запрещен'}), 403
+    
+    lesson = Lesson.query.get_or_404(lesson_id)
+    
+    group_lesson = GroupLesson.query.filter_by(
+        group_id=current_user.group_id, 
+        lesson_id=lesson_id
+    ).first()
+    
+    if not group_lesson:
+        return jsonify({'error': 'Урок не доступен вашей группе'}), 403
+    
+    answer_text = request.form.get('answer_text', '')
+    answer_file = request.files.get('answer_file')
+    
+    filename = None
+    if answer_file and answer_file.filename:
+        filename = secure_filename(f"{current_user.id}_{lesson_id}_{answer_file.filename}")
+        answer_file.save(os.path.join(app.config['UPLOAD_FOLDER'], filename))
+    
+    existing = Assignment.query.filter_by(
+        student_id=current_user.id,
+        lesson_id=lesson_id
     ).first()
     
     if existing:
@@ -657,270 +785,145 @@ def submit_assignment(lesson_id):
     else:
         assignment = Assignment(
             student_id=current_user.id,
-            lesson_id=lesson.id,
+            lesson_id=lesson_id,
             answer_text=answer_text,
             answer_file=filename
         )
         db.session.add(assignment)
     
     db.session.commit()
-    flash('Задание успешно отправлено', 'success')
-    return redirect(url_for('group_lesson', group_lesson_id=group_lesson.id))
+    return jsonify({'success': True, 'message': 'Ответ отправлен'})
 
-@app.route('/lesson/<int:lesson_id>/grade/<int:assignment_id>', methods=['POST'])
+@app.route('/api/lessons/<int:lesson_id>/groups/<int:group_id>/assignments', methods=['GET'])
 @login_required
-def grade_assignment(lesson_id, assignment_id):
+def api_get_assignments(lesson_id, group_id):
     if current_user.role != 'teacher':
-        flash('Доступ запрещен', 'danger')
-        return redirect(url_for('index'))
+        return jsonify({'error': 'Доступ запрещен'}), 403
+    
+    assignments = Assignment.query.filter_by(lesson_id=lesson_id).all()
+    result = []
+    for a in assignments:
+        if a.student.group_id == group_id:
+            result.append({
+                'id': a.id,
+                'student_name': a.student.name,
+                'answer_text': a.answer_text,
+                'answer_file': a.answer_file,
+                'score': a.score,
+                'feedback': a.feedback,
+                'submitted_at': a.submitted_at.isoformat() if a.submitted_at else None
+            })
+    
+    return jsonify(result)
+
+@app.route('/api/assignments/<int:assignment_id>/grade', methods=['POST'])
+@login_required
+def api_grade_assignment(assignment_id):
+    if current_user.role != 'teacher':
+        return jsonify({'error': 'Доступ запрещен'}), 403
     
     assignment = Assignment.query.get_or_404(assignment_id)
-    lesson = assignment.lesson
-    course = lesson.course
+    data = request.get_json()
     
-    # Проверяем, что преподаватель имеет доступ к курсу
-    conn = get_db_connection()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-    try:
-        cur.execute("""
-            SELECT * FROM teacher_course 
-            WHERE teacher_id = %s AND course_id = %s
-        """, (current_user.id, course.id))
-        has_access = cur.fetchone()
-        
-        if not has_access:
-            flash('У вас нет доступа к этому курсу', 'danger')
-            return redirect(url_for('index'))
-    finally:
-        cur.close()
-        conn.close()
-    
-    # Находим GroupLesson для перенаправления
-    group_lesson = GroupLesson.query.filter_by(
-        lesson_id=lesson.id, 
-        group_id=assignment.student.group_id
-    ).first()
-    
-    score = request.form.get('score')
-    feedback = request.form.get('feedback')
-    
-    if score:
-        assignment.score = int(score)
-    assignment.feedback = feedback
+    assignment.score = data.get('score')
+    assignment.feedback = data.get('feedback')
     db.session.commit()
     
-    flash('Оценка сохранена', 'success')
-    if group_lesson:
-        return redirect(url_for('group_lesson', group_lesson_id=group_lesson.id))
-    else:
-        return redirect(url_for('course', course_id=course.id))
+    return jsonify({'success': True})
 
-@app.route('/test/<int:lesson_id>/group/<int:group_id>', methods=['GET', 'POST'])
+@app.route('/api/assignments/lesson/<int:lesson_id>', methods=['GET'])
 @login_required
-def take_test(lesson_id, group_id):
+def api_get_assignment_by_lesson(lesson_id):
     if current_user.role != 'student':
-        flash('Доступ запрещен', 'danger')
-        return redirect(url_for('index'))
+        return jsonify({'error': 'Доступ запрещен'}), 403
     
-    lesson = Lesson.query.get_or_404(lesson_id)
-    group = Group.query.get_or_404(group_id)
+    assignment = Assignment.query.filter_by(
+        student_id=current_user.id,
+        lesson_id=lesson_id
+    ).first()
     
-    if current_user.group_id != group.id:
-        flash('У вас нет доступа', 'danger')
-        return redirect(url_for('index'))
+    if not assignment:
+        return jsonify(None), 200
     
-    group_lesson = GroupLesson.query.filter_by(group_id=group.id, lesson_id=lesson.id).first()
-    if not group_lesson:
-        flash('Этот урок не доступен вашей группе', 'danger')
-        return redirect(url_for('index'))
-    
-    assignment = Assignment.query.filter_by(student_id=current_user.id, lesson_id=lesson.id).first()
-    
-    if assignment and assignment.test_answers:
-        flash('Вы уже прошли этот тест', 'info')
-        return redirect(url_for('group_lesson', group_lesson_id=group_lesson.id))
-    
-    if request.method == 'POST':
-        if not assignment:
-            assignment = Assignment(student_id=current_user.id, lesson_id=lesson.id)
-            db.session.add(assignment)
-            db.session.flush()
-        
-        questions = lesson.questions
-        score = 0
-        
-        for question in questions:
-            answer = request.form.get(f'question_{question.id}')
-            if answer:
-                is_correct = (answer == question.correct_answer)
-                if is_correct:
-                    score += 1
-                
-                test_answer = TestAnswer(
-                    assignment_id=assignment.id,
-                    question_id=question.id,
-                    answer=answer,
-                    is_correct=is_correct
-                )
-                db.session.add(test_answer)
-        
-        total = len(questions)
-        assignment.score = score
-        assignment.feedback = f"Результат: {score} из {total} правильных ответов"
-        db.session.commit()
-        
-        flash(f'Тест завершен! Результат: {score} из {total}', 'success')
-        return redirect(url_for('group_lesson', group_lesson_id=group_lesson.id))
-    
-    questions = lesson.questions
-    return render_template('take_test.html', lesson=lesson, questions=questions, group=group, group_lesson_id=group_lesson.id)
+    return jsonify({
+        'id': assignment.id,
+        'answer_text': assignment.answer_text,
+        'answer_file': assignment.answer_file,
+        'score': assignment.score,
+        'feedback': assignment.feedback,
+        'submitted_at': assignment.submitted_at.isoformat() if assignment.submitted_at else None
+    })
 
+# Добавьте этот маршрут для раздачи файлов из папки uploads
 @app.route('/uploads/<filename>')
-@login_required
 def uploaded_file(filename):
+    from flask import send_from_directory
     return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
 
-@app.route('/admin')
-@login_required
-def admin_dashboard():
-    if current_user.role != 'admin':
-        flash('Доступ запрещен', 'danger')
-        return redirect(url_for('index'))
-    
-    users = User.query.all()
-    groups = Group.query.all()
-    courses = Course.query.all()
-    return render_template('admin_dashboard.html', users=users, groups=groups, courses=courses)
+# ============ ТЕСТЫ ============
 
-@app.route('/admin/add_user', methods=['GET', 'POST'])
+@app.route('/api/lessons/<int:lesson_id>/test/start', methods=['GET'])
 @login_required
-def add_user():
-    if current_user.role != 'admin':
-        flash('Доступ запрещен', 'danger')
-        return redirect(url_for('index'))
+def api_start_test(lesson_id):
+    lesson = Lesson.query.get_or_404(lesson_id)
+    if lesson.lesson_type != 'test':
+        return jsonify({'error': 'Это не тест'}), 400
     
-    if request.method == 'POST':
-        email = request.form.get('email')
-        password = request.form.get('password')
-        name = request.form.get('name')
-        role = request.form.get('role')
-        group_id = request.form.get('group_id')
-        
-        if User.query.filter_by(email=email).first():
-            flash('Пользователь с таким email уже существует', 'danger')
-            return redirect(url_for('add_user'))
-        
-        user = User(
-            email=email,
-            password_hash=generate_password_hash(password),  # <-- ДОЛЖНО БЫТЬ
-            name=name,
-            role=role,
-            group_id=int(group_id) if group_id and group_id != '' else None
-        )
-        db.session.add(user)
-        db.session.commit()
-        flash('Пользователь успешно добавлен', 'success')
-        return redirect(url_for('admin_dashboard'))
-    
-    groups = Group.query.all()
-    return render_template('add_user.html', groups=groups)
+    questions = lesson.questions
+    return jsonify([{
+        'id': q.id,
+        'text': q.text,
+        'option_a': q.option_a,
+        'option_b': q.option_b,
+        'option_c': q.option_c,
+        'option_d': q.option_d
+    } for q in questions])
 
-@app.route('/admin/edit_user/<int:user_id>', methods=['GET', 'POST'])
+@app.route('/api/lessons/<int:lesson_id>/test/submit', methods=['POST'])
 @login_required
-def edit_user(user_id):
-    if current_user.role != 'admin':
-        flash('Доступ запрещен', 'danger')
-        return redirect(url_for('index'))
+def api_submit_test(lesson_id):
+    lesson = Lesson.query.get_or_404(lesson_id)
+    data = request.get_json()
+    answers = data.get('answers', {})
     
-    user = User.query.get_or_404(user_id)
+    questions = lesson.questions
+    score = 0
+    total = len(questions)
     
-    if user.id == current_user.id:
-        flash('Нельзя редактировать свою учетную запись здесь.', 'warning')
-        return redirect(url_for('admin_dashboard'))
+    assignment = Assignment.query.filter_by(
+        student_id=current_user.id,
+        lesson_id=lesson_id
+    ).first()
     
-    if request.method == 'POST':
-        name = request.form.get('name')
-        role = request.form.get('role')
-        group_id = request.form.get('group_id')
-        new_password = request.form.get('new_password')
-        
-        user.name = name
-        user.role = role
-        user.group_id = int(group_id) if group_id and group_id != '' else None
-        
-        if new_password and new_password.strip():
-            user.password_hash = generate_password_hash(new_password)
-            flash('Пароль успешно изменен', 'success')
-        
-        db.session.commit()
-        flash(f'Пользователь "{user.name}" успешно обновлен', 'success')
-        return redirect(url_for('admin_dashboard'))
-    
-    groups = Group.query.all()
-    return render_template('edit_user.html', user=user, groups=groups)
-
-@app.route('/admin/add_group', methods=['GET', 'POST'])
-@login_required
-def add_group():
-    if current_user.role != 'admin':
-        flash('Доступ запрещен', 'danger')
-        return redirect(url_for('index'))
-    
-    if request.method == 'POST':
-        name = request.form.get('name')
-        group = Group(name=name)
-        db.session.add(group)
-        db.session.commit()
-        flash('Группа успешно создана', 'success')
-        return redirect(url_for('admin_dashboard'))
-    
-    return render_template('add_group.html')
-
-@app.route('/admin/add_course', methods=['GET', 'POST'])
-@login_required
-def add_course():
-    if current_user.role != 'admin':
-        flash('Доступ запрещен', 'danger')
-        return redirect(url_for('index'))
-    
-    if request.method == 'POST':
-        title = request.form.get('title')
-        description = request.form.get('description')
-        teacher_ids = request.form.getlist('teachers')
-        
-        course = Course(title=title, description=description)
-        db.session.add(course)
+    if not assignment:
+        assignment = Assignment(student_id=current_user.id, lesson_id=lesson_id)
+        db.session.add(assignment)
         db.session.flush()
-        
-        for teacher_id in teacher_ids:
-            teacher = User.query.get(int(teacher_id))
-            if teacher and teacher.role == 'teacher':
-                course.teachers.append(teacher)
-        
-        db.session.commit()
-        flash('Курс успешно создан', 'success')
-        return redirect(url_for('admin_dashboard'))
     
-    teachers = User.query.filter_by(role='teacher').all()
-    return render_template('add_course.html', teachers=teachers)
+    for q in questions:
+        answer = answers.get(str(q.id))
+        if answer:
+            is_correct = (answer == q.correct_answer)
+            if is_correct:
+                score += 1
+            
+            test_answer = TestAnswer(
+                assignment_id=assignment.id,
+                question_id=q.id,
+                answer=answer,
+                is_correct=is_correct
+            )
+            db.session.add(test_answer)
+    
+    assignment.score = score
+    assignment.feedback = f"Результат: {score} из {total} правильных ответов"
+    db.session.commit()
+    
+    return jsonify({'score': score, 'total': total, 'feedback': assignment.feedback})
 
-@app.route('/admin/delete_user/<int:user_id>')
-@login_required
-def delete_user(user_id):
-    if current_user.role != 'admin':
-        flash('Доступ запрещен', 'danger')
-        return redirect(url_for('index'))
-    
-    user = User.query.get_or_404(user_id)
-    if user.role == 'admin':
-        flash('Нельзя удалить администратора', 'danger')
-    else:
-        db.session.delete(user)
-        db.session.commit()
-        flash('Пользователь удален', 'success')
-    
-    return redirect(url_for('admin_dashboard'))
+# ============ ЗАПУСК ============
 
 if __name__ == '__main__':
-    os.makedirs('uploads', exist_ok=True)
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    with app.app_context():
+        db.create_all()
+    app.run(debug=True, port=5000)
