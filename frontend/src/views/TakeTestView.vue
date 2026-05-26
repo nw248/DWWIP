@@ -9,24 +9,20 @@
     </div>
 
     <form @submit.prevent="submitTest">
-      <div v-for="question in questions" :key="question.id" class="card mb-3">
+      <div v-for="(question, idx) in questions" :key="question.id" class="card mb-3">
         <div class="card-body">
-          <h5>Вопрос {{ index + 1 }}: {{ question.text }}</h5>
-          <div class="form-check mt-2">
-            <input class="form-check-input" type="radio" :name="'q'+question.id" value="A" v-model="answers[question.id]">
-            <label class="form-check-label">A) {{ question.option_a }}</label>
-          </div>
-          <div class="form-check">
-            <input class="form-check-input" type="radio" :name="'q'+question.id" value="B" v-model="answers[question.id]">
-            <label class="form-check-label">B) {{ question.option_b }}</label>
-          </div>
-          <div class="form-check">
-            <input class="form-check-input" type="radio" :name="'q'+question.id" value="C" v-model="answers[question.id]">
-            <label class="form-check-label">C) {{ question.option_c }}</label>
-          </div>
-          <div class="form-check">
-            <input class="form-check-input" type="radio" :name="'q'+question.id" value="D" v-model="answers[question.id]">
-            <label class="form-check-label">D) {{ question.option_d }}</label>
+          <h5>Вопрос {{ idx + 1 }}: {{ question.text }}</h5>
+          <div v-for="(option, optIdx) in question.options" :key="optIdx" class="form-check mt-2">
+            <input 
+              class="form-check-input" 
+              type="radio" 
+              :name="'q'+question.id" 
+              :value="String.fromCharCode(65 + optIdx)"
+              v-model="answers[question.id]"
+            >
+            <label class="form-check-label">
+              {{ String.fromCharCode(65 + optIdx) }}) {{ option }}
+            </label>
           </div>
         </div>
       </div>
@@ -51,7 +47,6 @@ export default {
     const lesson = ref(null)
     const questions = ref([])
     const answers = ref({})
-    const index = 0
 
     onMounted(async () => {
       try {
@@ -61,8 +56,10 @@ export default {
         ])
         lesson.value = lessonRes.data
         questions.value = testRes.data
+        console.log('Загружен тест:', questions.value)
       } catch (err) {
         console.error('Ошибка загрузки теста:', err)
+        alert('Ошибка загрузки теста')
       }
     })
 
@@ -79,7 +76,7 @@ export default {
       }
     }
 
-    return { lesson, questions, answers, submitTest, index }
+    return { lesson, questions, answers, submitTest }
   }
 }
 </script>

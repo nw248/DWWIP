@@ -479,18 +479,27 @@ def api_update_user(user_id):
     user = User.query.get_or_404(user_id)
     data = request.get_json()
     
+    # Обновление email
     if 'email' in data:
         existing = User.query.filter(User.email == data['email'], User.id != user_id).first()
         if existing:
             return jsonify({'error': 'Email уже используется'}), 400
         user.email = data['email']
     
+    # Обновление пароля
     if data.get('new_password'):
-        # ВАЛИДАЦИЯ НОВОГО ПАРОЛЯ
         valid, msg = validate_password(data['new_password'])
         if not valid:
             return jsonify({'error': msg}), 400
         user.password_hash = generate_password_hash(data['new_password'])
+    
+    # ⚠️ ВАЖНО: обновление группы
+    if 'group_id' in data:
+        # Если group_id = null или пустая строка
+        if data['group_id'] in (None, '', 0):
+            user.group_id = None
+        else:
+            user.group_id = int(data['group_id'])
     
     db.session.commit()
     return jsonify({'success': True})
@@ -688,7 +697,7 @@ def api_create_lesson(course_id, group_id):
         title=title,
         content=content,
         lesson_type=lesson_type,
-        files=filenames,  # Сохраняем список имён файлов
+        files=filenames,
         course_id=course_id
     )
     db.session.add(lesson)
@@ -698,15 +707,21 @@ def api_create_lesson(course_id, group_id):
     db.session.add(group_lesson)
     
     if lesson_type == 'test':
-        questions_data = json.loads(request.form.get('questions', '[]'))
-        for q in questions_data:
-            question = Question(
-                text=q['text'],
-                options=q['options'],
-                correct_answers=q['correct_answers'],
-                lesson_id=lesson.id
-            )
-            db.session.add(question)
+        questions_data = request.form.get('questions')
+        if questions_data:
+            try:
+                questions = json.loads(questions_data)
+                for q in questions:
+                    question = Question(
+                        text=q['text'],
+                        options=q['options'],
+                        correct_answers=q['correct_answers'],  # это массив
+                        lesson_id=lesson.id
+                    )
+                    db.session.add(question)
+            except json.JSONDecodeError as e:
+                print(f"JSON ошибка: {e}")
+                return jsonify({'error': 'Неверный формат данных вопросов'}), 400
     
     db.session.commit()
     return jsonify({'success': True, 'lesson_id': lesson.id})
@@ -873,10 +888,8 @@ def api_start_test(lesson_id):
     return jsonify([{
         'id': q.id,
         'text': q.text,
-        'option_a': q.option_a,
-        'option_b': q.option_b,
-        'option_c': q.option_c,
-        'option_d': q.option_d
+        'options': q.options,  # JSON массив вариантов
+        'correct_answers': q.correct_answers  # JSON массив правильных ответов
     } for q in questions])
 
 @app.route('/api/lessons/<int:lesson_id>/test/submit', methods=['POST'])
@@ -903,7 +916,8 @@ def api_submit_test(lesson_id):
     for q in questions:
         answer = answers.get(str(q.id))
         if answer:
-            is_correct = (answer == q.correct_answer)
+            # Проверяем, есть ли ответ в массиве correct_answers
+            is_correct = answer in q.correct_answers
             if is_correct:
                 score += 1
             

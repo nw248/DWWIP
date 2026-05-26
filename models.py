@@ -95,9 +95,11 @@ class Question(db.Model):
     
     id = db.Column(db.Integer, primary_key=True)
     text = db.Column(db.Text, nullable=False)
-    options = db.Column(db.JSON, nullable=False)  # JSON массив вариантов ответов
-    correct_answers = db.Column(db.JSON, nullable=False)  # JSON массив правильных ответов
+    options = db.Column(db.JSON, nullable=False)
+    correct_answers = db.Column(db.JSON, nullable=False)
     lesson_id = db.Column(db.Integer, db.ForeignKey('lessons.id'), nullable=False)
+    
+    test_answers = db.relationship('TestAnswer', backref='question', lazy=True, cascade='all, delete-orphan')
 
 class Assignment(db.Model):
     __tablename__ = 'assignments'

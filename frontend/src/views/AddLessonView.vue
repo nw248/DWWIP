@@ -133,17 +133,18 @@ export default {
       formData.append('content', content.value)
       formData.append('lesson_type', lessonType.value)
       
-      // Добавляем файлы
       files.value.forEach(file => {
         formData.append('files', file)
       })
       
       if (lessonType.value === 'test') {
-        formData.append('questions', JSON.stringify(questions.value.map(q => ({
+        // ВАЖНО: questions отправляем как JSON-строку
+        const questionsData = questions.value.map(q => ({
           text: q.text,
           options: q.options.map(opt => opt.text),
-          correct_answers: q.correct_answers
-        }))))
+          correct_answers: q.correct_answers  // Это массив, например ['A', 'B']
+        }))
+        formData.append('questions', JSON.stringify(questionsData))
       }
       
       try {
@@ -153,7 +154,7 @@ export default {
         router.push(`/course/${courseId}/group/${groupId}`)
       } catch (err) {
         console.error('Ошибка:', err)
-        alert('Ошибка при создании урока')
+        alert('Ошибка при создании урока: ' + (err.response?.data?.error || err.message))
       }
     }
 

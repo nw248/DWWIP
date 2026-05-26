@@ -41,7 +41,7 @@ def create_admin():
         
         # Генерируем правильный хеш пароля
         email = 'admin@example.com'
-        password = 'admin123'
+        password = 'Admin123!'
         password_hash = generate_password_hash(password)
         
         # Вставляем администратора

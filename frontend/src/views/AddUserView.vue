@@ -20,7 +20,7 @@
                 </button>
               </div>
               <div class="mt-2">
-                <div class="small" :class="passwordRules.length >= 8 ? 'text-success' : 'text-danger'">
+                <div class="small" :class="passwordRules.length ? 'text-success' : 'text-danger'">
                   ✓ Минимум 8 символов
                 </div>
                 <div class="small" :class="passwordRules.hasUpperCase ? 'text-success' : 'text-danger'">
